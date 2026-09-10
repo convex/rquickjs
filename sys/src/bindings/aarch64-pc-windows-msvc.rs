@@ -279,6 +279,8 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     pub fn JS_GetRuntimeOpaque(rt: *mut JSRuntime) -> *mut ::core::ffi::c_void;
+    pub fn JS_GetContinuationPreservedEmbedderData(rt: *mut JSRuntime) -> JSValue;
+    pub fn JS_SetContinuationPreservedEmbedderData(rt: *mut JSRuntime, value: JSValueConst);
 }
 unsafe extern "C" {
     pub fn JS_SetRuntimeOpaque(rt: *mut JSRuntime, opaque: *mut ::core::ffi::c_void);

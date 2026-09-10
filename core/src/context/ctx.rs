@@ -392,6 +392,35 @@ impl<'js> Ctx<'js> {
         })
     }
 
+    /// Returns the current runtime-wide continuation data (initially undefined).
+    ///
+    /// The returned value owns a reference. Promise reactions capture this value
+    /// when registered; other QuickJS jobs capture it when enqueued. Objects are
+    /// shared by identity, not cloned.
+    pub fn continuation_preserved_embedder_data(&self) -> Value<'js> {
+        unsafe {
+            let rt = qjs::JS_GetRuntime(self.as_ptr());
+            Value::from_js_value(
+                self.clone(),
+                qjs::JS_GetContinuationPreservedEmbedderData(rt),
+            )
+        }
+    }
+
+    /// Sets the current runtime-wide continuation data.
+    ///
+    /// Pass [`Value::new_undefined`] to clear it. QuickJS restores the caller's
+    /// data after each job, including when it throws. Synchronous calls do not
+    /// restore data automatically; save the previous value and restore it after
+    /// a synchronous scope. Rust future polling and host timers do not capture
+    /// this data automatically.
+    pub fn set_continuation_preserved_embedder_data(&self, value: Value<'js>) {
+        unsafe {
+            let rt = qjs::JS_GetRuntime(self.as_ptr());
+            qjs::JS_SetContinuationPreservedEmbedderData(rt, value.as_js_value());
+        }
+    }
+
     /// Executes a quickjs job.
     ///
     /// Returns wether a job was actually executed.
@@ -727,6 +756,58 @@ mod test {
 
             assert_eq!(str, r#"{"a":{"b":1,"c":true},"d":[0,"foo"]}"#);
         })
+    }
+
+    #[test]
+    fn continuation_preserved_embedder_data() {
+        use crate::{Context, Ctx, Function, Object, Promise, Runtime, Value};
+
+        let rt = Runtime::new().unwrap();
+        let context = Context::full(&rt).unwrap();
+        context.with(|ctx| {
+            assert!(ctx.continuation_preserved_embedder_data().is_undefined());
+            let object = Object::new(ctx.clone()).unwrap().into_value();
+            ctx.set_continuation_preserved_embedder_data(object.clone());
+            let saved = ctx.continuation_preserved_embedder_data();
+            ctx.set_continuation_preserved_embedder_data(Value::new_undefined(ctx.clone()));
+            ctx.run_gc();
+            assert_eq!(object, saved);
+            assert!(ctx.continuation_preserved_embedder_data().is_undefined());
+
+            let get = Function::new(ctx.clone(), |ctx: Ctx<'_>| {
+                ctx.continuation_preserved_embedder_data().as_int().unwrap()
+            })
+            .unwrap();
+            ctx.globals().set("getData", get).unwrap();
+            ctx.set_continuation_preserved_embedder_data(Value::new_int(ctx.clone(), 1));
+            let done: Promise = ctx
+                .eval(
+                    r#"
+                var resolve;
+                var pending = new Promise(r => resolve = r);
+                var seen = [];
+                var done = (async () => {
+                    await pending;
+                    seen.push(getData());
+                    await 0;
+                    seen.push(getData());
+                })();
+                done
+            "#,
+                )
+                .unwrap();
+            let reaction: Promise = ctx
+                .eval("pending.then(() => seen.push(getData()))")
+                .unwrap();
+            ctx.set_continuation_preserved_embedder_data(Value::new_int(ctx.clone(), 2));
+            let resolve: Function = ctx.globals().get("resolve").unwrap();
+            resolve.call::<_, ()>(()).unwrap();
+            done.finish::<()>().unwrap();
+            reaction.finish::<()>().unwrap();
+            assert_eq!(ctx.eval::<Vec<i32>, _>("seen").unwrap(), vec![1, 1, 1]);
+            assert_eq!(ctx.continuation_preserved_embedder_data().as_int(), Some(2));
+            ctx.set_continuation_preserved_embedder_data(Value::new_undefined(ctx.clone()));
+        });
     }
 
     #[test]
